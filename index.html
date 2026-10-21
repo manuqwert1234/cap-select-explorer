@@ -411,7 +411,7 @@ buildScene(2); draw();
     return ["hard", "easy"].map(g => {
       const its = REAL.filter(r => r.grp === g);
       const row = names.map(([key, nm]) => `${nm}: <b>${its.filter(r => r.runs[key + "_k" + k].pred.trim() === String(r.gold).trim()).length}/${its.length}</b>`).join(" &nbsp; ");
-      return `<div><b>${g === "easy" ? "Easy photos (full model counts them correctly)" : "Harder photos (first five found with 4-9 objects, not filtered)"}</b>, correct counts at ${k} tokens: ${row}</div>`;
+      return `<div><b>${g === "easy" ? "Photos where the full 576-token model answers correctly" : "First five photos found with 4-9 objects (unfiltered)"}</b>, correct counts at ${k} tokens: ${row}</div>`;
     }).join("");
   }
   function show() {
