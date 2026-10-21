@@ -49,6 +49,8 @@
   <h2>Your image with kept tokens. Click one apple to tell the selector what to look for.</h2>
   <canvas id="c_img" width="576" height="576" style="image-rendering:auto"></canvas>
   <div id="imgcount" style="margin-top:8px;font-size:15px"></div>
+  <h2 style="margin-top:16px">What the language model sees after each step</h2>
+  <div id="steps" class="grid"></div>
   <div class="cap">Image mode uses simple colour and texture features per patch in place of CLIP and LLaVA, so it shows the algorithm's behaviour, not the real model's.</div>
 </div>
 
@@ -284,7 +286,39 @@ function drawImg(r, tau) {
     if (any) kept++;
   });
   S.localCount = blobs;
+  drawSteps(tau);
   $("imgcount").innerHTML = `Matching objects found: <b>${blobs}</b> &nbsp; | &nbsp; still represented after pruning to ${r.src.filter(Boolean).length} tokens: <b>${kept} of ${blobs}</b> &nbsp; | &nbsp; selection time ${S.ms} ms`;
+}
+function cover(r, tau) {
+  const ok = S.emb.map((e, i) => dot(e, S.emb[S.target]) >= tau && S.nm[i] > 0.25 * S.mx);
+  const seen = new Set(); let blobs = 0, kept = 0;
+  ok.forEach((v, i) => {
+    if (!v || seen.has(i)) return; blobs++;
+    const st = [i]; seen.add(i); let any = false;
+    while (st.length) {
+      const t = st.pop(); if (r.src[t]) any = true;
+      const rr = Math.floor(t / N), cc = t % N;
+      for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const a = rr + dr, b = cc + dc; if (a < 0 || b < 0 || a >= N || b >= N) continue;
+        const u = idx(a, b); if (ok[u] && !seen.has(u)) { seen.add(u); st.push(u); }
+      }
+    }
+    if (any) kept++;
+  });
+  return { blobs, kept };
+}
+function drawSteps(tau) {
+  const k = +$("k").value, al = +$("a").value, be = +$("b").value;
+  const defs = [[0, "Step 1: top-k by score"], [1, "Step 2: add spatial floor"], [2, "Step 3: add multiplicity (full CAP-Select)"], ["m", "For comparison: similarity merge"]];
+  $("steps").innerHTML = defs.map(([m], i) => `<div class="cell"><h2>${defs[i][1]}</h2><canvas id="st${i}" width="288" height="288" style="image-rendering:auto"></canvas><div class="cap" id="stc${i}"></div></div>`).join("");
+  const im = new Image(); im.onload = () => defs.forEach(([m], i) => {
+    const r = select(m, k, al, be, tau), cx = $("st" + i).getContext("2d"), z = 288 / N;
+    cx.drawImage(im, 0, 0, 288, 288);
+    cx.fillStyle = "rgba(0,0,0,0.8)";
+    r.src.forEach((s, j) => { if (!s) cx.fillRect((j % N) * z, Math.floor(j / N) * z, z + 0.5, z + 0.5); });
+    const c = cover(r, tau);
+    $("stc" + i).innerHTML = `<b>${c.kept} of ${c.blobs}</b> objects still visible with ${r.src.filter(Boolean).length} tokens`;
+  }); im.src = cropURL;
 }
 if ($("file")) $("file").onchange = e => {
   const f = e.target.files[0]; if (!f) return;
