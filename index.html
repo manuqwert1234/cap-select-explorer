@@ -54,13 +54,6 @@
   <div class="cap">Image mode uses simple colour and texture features per patch in place of CLIP and LLaVA, so it shows the algorithm's behaviour, not the real model's.</div>
 </div>
 
-<div class="cell" style="margin-bottom:16px">
-  <h2>Real LLaVA-1.5-7B selections</h2>
-  <div class="cap" style="font-size:13px;color:#111">These are not simulated. The actual LLaVA-1.5-7B ran on a Kaggle T4 GPU on 5 TallyQA test photos, and each map shows the tokens the real selector kept and the answer the real model then gave. Five photos are an illustration, not a statistic: the full results are in the paper.</div>
-  <div style="margin:8px 0"><span id="rp"></span> &nbsp; <label>Budget <select id="rk"><option value="64">64 tokens</option><option value="32">32 tokens</option></select></label></div>
-  <div id="rq" style="font-size:14px;margin-bottom:8px"></div>
-  <div id="rg" class="grid"></div>
-</div>
 <div style="margin-bottom:12px"><button id="next" style="padding:8px 16px">Next stage</button></div>
 <div id="desc" class="cell" style="margin-bottom:16px"></div>
 <div id="prog" class="grid" style="margin-bottom:16px"></div>
@@ -82,6 +75,13 @@
 <p><b>Baseline.</b> The similarity merge walks tokens in fused order and drops any token too similar to one already kept. On repeated objects it keeps one copy and drops the rest, which is the failure CAP-Select targets.</p>
 </details>
 
+<div class="cell" style="margin-top:24px">
+  <h2>Real LLaVA-1.5-7B selections</h2>
+  <div class="cap" style="font-size:13px;color:#111">These are not simulated. The actual LLaVA-1.5-7B ran on a Kaggle T4 GPU on 5 TallyQA test photos, and each map shows the tokens the real selector kept and the answer the real model then gave. Five photos are an illustration, not a statistic: the full results are in the paper.</div>
+  <div style="margin:8px 0"><span id="rp"></span> &nbsp; <label>Budget <select id="rk"><option value="64">64 tokens</option><option value="32">32 tokens</option></select></label></div>
+  <div id="rq" style="font-size:14px;margin-bottom:8px"></div>
+  <div id="rg" class="grid"></div>
+</div>
 <script src="real_selections.js"></script>
 <script>
 const N = 24, D = 8;
