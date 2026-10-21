@@ -403,10 +403,10 @@ buildScene(2); draw();
 // ---- real LLaVA selections (precomputed on Kaggle) ----
 (function () {
   if (!window.REAL) { $("rg").textContent = "Real selection data not loaded."; return; }
-  let cur = 0;
+  let cur = REAL.findIndex(r => r.grp === "easy");
   const names = [["stage0_topk", "Stage 0: top-k"], ["stage1_floor", "Stage 1: + floor"], ["stage2_capselect", "Stage 2: full CAP-Select"], ["merge_baseline", "Merge baseline"]];
   let hi = 0, ei = 0;
-  $("rp").innerHTML = REAL.map((r, i) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin:2px 4px 2px 0">${r.grp === "easy" ? "Easy photo " + (++ei) : "Photo " + (++hi)}</button>`).join("");
+  $("rp").innerHTML = [...REAL.keys()].sort((a, b) => (REAL[a].grp === "easy" ? 0 : 1) - (REAL[b].grp === "easy" ? 0 : 1) || a - b).map(i => [REAL[i], i]).map(([r, i]) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin:2px 4px 2px 0">${r.grp === "easy" ? "Easy photo " + (++ei) : "Photo " + (++hi)}</button>`).join("");
   function summary(k) {
     return ["hard", "easy"].map(g => {
       const its = REAL.filter(r => r.grp === g);
@@ -423,7 +423,8 @@ buildScene(2); draw();
       const cx = $("rc" + i).getContext("2d"), z = 336 / 24, run = it.runs[key + "_k" + k], kept = new Set(run.kept);
       cx.drawImage(im, 0, 0); cx.fillStyle = "rgba(0,0,0,0.8)";
       for (let j = 0; j < 576; j++) if (!kept.has(j)) cx.fillRect((j % 24) * z, Math.floor(j / 24) * z, z + 0.5, z + 0.5);
-      $("rt" + i).innerHTML = `${run.kept.length} tokens kept. Model answer: <b>${run.pred}</b>`;
+      const ok = run.pred.trim() === String(it.gold).trim();
+      $("rt" + i).innerHTML = `${run.kept.length} tokens kept. Model answer: <b>${run.pred}</b> (${ok ? "correct" : "wrong, correct is " + it.gold})`;
     }); im.src = "data:image/jpeg;base64," + it.img;
     document.querySelectorAll(".rb").forEach(b => b.style.fontWeight = (+b.dataset.i === cur) ? "700" : "400");
   }
