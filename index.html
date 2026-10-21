@@ -79,10 +79,11 @@
   <h2>Real LLaVA-1.5-7B selections</h2>
   <div class="cap" style="font-size:13px;color:#111">These are not simulated. The actual LLaVA-1.5-7B ran on a Kaggle T4 GPU on 5 TallyQA test photos, and each map shows the tokens the real selector kept and the answer the real model then gave. Five photos are an illustration, not a statistic: the full results are in the paper.</div>
   <div style="margin:8px 0"><span id="rp"></span> &nbsp; <label>Budget <select id="rk"><option value="64">64 tokens</option><option value="32">32 tokens</option></select></label></div>
+  <div id="rs" style="font-size:14px;margin-bottom:8px"></div>
   <div id="rq" style="font-size:14px;margin-bottom:8px"></div>
   <div id="rg" class="grid"></div>
 </div>
-<script src="real_selections.js"></script>
+<script src="real_selections.js?v=2"></script>
 <script>
 const N = 24, D = 8;
 const $ = id => document.getElementById(id);
@@ -404,9 +405,18 @@ buildScene(2); draw();
   if (!window.REAL) { $("rg").textContent = "Real selection data not loaded."; return; }
   let cur = 0;
   const names = [["stage0_topk", "Stage 0: top-k"], ["stage1_floor", "Stage 1: + floor"], ["stage2_capselect", "Stage 2: full CAP-Select"], ["merge_baseline", "Merge baseline"]];
-  $("rp").innerHTML = REAL.map((_, i) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin-right:4px">Photo ${i + 1}</button>`).join("");
+  let hi = 0, ei = 0;
+  $("rp").innerHTML = REAL.map((r, i) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin:2px 4px 2px 0">${r.grp === "easy" ? "Easy photo " + (++ei) : "Photo " + (++hi)}</button>`).join("");
+  function summary(k) {
+    return ["hard", "easy"].map(g => {
+      const its = REAL.filter(r => r.grp === g);
+      const row = names.map(([key, nm]) => `${nm}: <b>${its.filter(r => r.runs[key + "_k" + k].pred.trim() === String(r.gold).trim()).length}/${its.length}</b>`).join(" &nbsp; ");
+      return `<div><b>${g === "easy" ? "Easy photos (full model counts them correctly)" : "Harder photos (first five found with 4-9 objects, not filtered)"}</b>, correct counts at ${k} tokens: ${row}</div>`;
+    }).join("");
+  }
   function show() {
     const it = REAL[cur], k = $("rk").value;
+    $("rs").innerHTML = summary(k) + '<div class="cap">Counts of correct answers out of 5 photos in each group. Tiny samples: they show how the real selector behaves, they are not a benchmark.</div>';
     $("rq").innerHTML = `${it.q} &nbsp; Correct answer: <b>${it.gold}</b> &nbsp; | &nbsp; LLaVA with all 576 tokens: <b>${it.full}</b>`;
     $("rg").innerHTML = names.map((n, i) => `<div class="cell"><h2>${n[1]}</h2><canvas id="rc${i}" width="336" height="336" style="image-rendering:auto"></canvas><div class="cap" id="rt${i}"></div></div>`).join("");
     const im = new Image(); im.onload = () => names.forEach(([key], i) => {
