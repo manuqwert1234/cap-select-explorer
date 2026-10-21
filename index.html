@@ -54,6 +54,13 @@
   <div class="cap">Image mode uses simple colour and texture features per patch in place of CLIP and LLaVA, so it shows the algorithm's behaviour, not the real model's.</div>
 </div>
 
+<div class="cell" style="margin-bottom:16px">
+  <h2>Real LLaVA-1.5-7B selections</h2>
+  <div class="cap" style="font-size:13px;color:#111">These are not simulated. The actual LLaVA-1.5-7B ran on a Kaggle T4 GPU on 5 TallyQA test photos, and each map shows the tokens the real selector kept and the answer the real model then gave. Five photos are an illustration, not a statistic: the full results are in the paper.</div>
+  <div style="margin:8px 0"><span id="rp"></span> &nbsp; <label>Budget <select id="rk"><option value="64">64 tokens</option><option value="32">32 tokens</option></select></label></div>
+  <div id="rq" style="font-size:14px;margin-bottom:8px"></div>
+  <div id="rg" class="grid"></div>
+</div>
 <div style="margin-bottom:12px"><button id="next" style="padding:8px 16px">Next stage</button></div>
 <div id="desc" class="cell" style="margin-bottom:16px"></div>
 <div id="prog" class="grid" style="margin-bottom:16px"></div>
@@ -75,6 +82,7 @@
 <p><b>Baseline.</b> The similarity merge walks tokens in fused order and drops any token too similar to one already kept. On repeated objects it keeps one copy and drops the rest, which is the failure CAP-Select targets.</p>
 </details>
 
+<script src="real_selections.js"></script>
 <script>
 const N = 24, D = 8;
 const $ = id => document.getElementById(id);
@@ -391,6 +399,28 @@ $("c_img").onclick = e => {
   buildImage(userImg, idx(r, c)); draw();
 };
 buildScene(2); draw();
+// ---- real LLaVA selections (precomputed on Kaggle) ----
+(function () {
+  if (!window.REAL) { $("rg").textContent = "Real selection data not loaded."; return; }
+  let cur = 0;
+  const names = [["stage0_topk", "Stage 0: top-k"], ["stage1_floor", "Stage 1: + floor"], ["stage2_capselect", "Stage 2: full CAP-Select"], ["merge_baseline", "Merge baseline"]];
+  $("rp").innerHTML = REAL.map((_, i) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin-right:4px">Photo ${i + 1}</button>`).join("");
+  function show() {
+    const it = REAL[cur], k = $("rk").value;
+    $("rq").innerHTML = `${it.q} &nbsp; Correct answer: <b>${it.gold}</b> &nbsp; | &nbsp; LLaVA with all 576 tokens: <b>${it.full}</b>`;
+    $("rg").innerHTML = names.map((n, i) => `<div class="cell"><h2>${n[1]}</h2><canvas id="rc${i}" width="336" height="336" style="image-rendering:auto"></canvas><div class="cap" id="rt${i}"></div></div>`).join("");
+    const im = new Image(); im.onload = () => names.forEach(([key], i) => {
+      const cx = $("rc" + i).getContext("2d"), z = 336 / 24, run = it.runs[key + "_k" + k], kept = new Set(run.kept);
+      cx.drawImage(im, 0, 0); cx.fillStyle = "rgba(0,0,0,0.8)";
+      for (let j = 0; j < 576; j++) if (!kept.has(j)) cx.fillRect((j % 24) * z, Math.floor(j / 24) * z, z + 0.5, z + 0.5);
+      $("rt" + i).innerHTML = `${run.kept.length} tokens kept. Model answer: <b>${run.pred}</b>`;
+    }); im.src = "data:image/jpeg;base64," + it.img;
+    document.querySelectorAll(".rb").forEach(b => b.style.fontWeight = (+b.dataset.i === cur) ? "700" : "400");
+  }
+  $("rp").onclick = e => { if (e.target.dataset.i !== undefined) { cur = +e.target.dataset.i; show(); } };
+  $("rk").onchange = show; show();
+})();
+
 </script>
 </body>
 </html>
