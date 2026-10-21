@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAP-Select Explorer</title>
+<style>
+  :root{--fg:#111;--mut:#555;--line:#ccc}
+  body{font:15px/1.45 system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:16px;color:var(--fg);background:#fff}
+  h1{font-size:20px;margin:0 0 4px} h2{font-size:15px;margin:0 0 6px}
+  p.sub{color:var(--mut);margin:0 0 16px}
+  .ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+  .ctl label{display:block;font-weight:600;font-size:13px}
+  .ctl input[type=range]{width:100%}
+  .ctl select{width:100%;padding:6px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .cell{border:1px solid var(--line);padding:8px}
+  canvas{width:100%;image-rendering:pixelated;display:block;border:1px solid var(--line);cursor:crosshair}
+  .cap{font-size:12px;color:var(--mut);margin-top:6px}
+  .leg span{display:inline-block;margin-right:12px;font-size:12px}
+  .leg i{display:inline-block;width:11px;height:11px;margin-right:4px;vertical-align:-1px;border:1px solid #000}
+  table{border-collapse:collapse;font-size:13px;margin-top:12px}
+  td,th{padding:4px 10px;border-bottom:1px solid var(--line);text-align:left}
+  #hover{font-size:13px;min-height:20px;margin-top:8px;font-variant-numeric:tabular-nums}
+  details{margin-top:16px;color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<h1>CAP-Select Explorer</h1>
+<p class="sub">Interactive walk-through of the method in the paper (LLaVA-1.5-7B, 24x24 patch grid, 576 tokens). The scene is a synthetic toy, not model output; the selection logic follows Section III step by step.</p>
+
+<div class="ctl">
+  <div><label>Method <select id="method">
+    <option value="2">Stage 2: full CAP-Select</option>
+    <option value="1">Stage 1: floor + fused fill</option>
+    <option value="0">Stage 0: top-k by fused score</option>
+    <option value="m">Baseline: similarity merge</option></select></label></div>
+  <div><label>Budget k = <span id="kv"></span><input id="k" type="range" min="16" max="192" step="1" value="64"></label></div>
+  <div><label>alpha (relevance) = <span id="av"></span><input id="a" type="range" min="0" max="2" step="0.1" value="1"></label></div>
+  <div><label>beta (saliency) = <span id="bv"></span><input id="b" type="range" min="0" max="2" step="0.1" value="1"></label></div>
+  <div><label>tau (cluster threshold) = <span id="tv"></span><input id="t" type="range" min="0.2" max="0.9" step="0.01" value="0.5"></label></div>
+  <div><label>Scene <select id="scene">
+    <option value="1">4 identical cups + 1 large object</option>
+    <option value="2">7 identical cups + 1 large object</option>
+    <option value="3">1 large object only</option></select></label></div>
+  <div><label>&nbsp;<button id="easy" style="width:100%;padding:8px">Add sample image</button></label></div>
+</div>
+<div id="imgpanel" class="cell" hidden style="margin-bottom:16px">
+  <h2>Your image with kept tokens. Click one apple to tell the selector what to look for.</h2>
+  <canvas id="c_img" width="576" height="576" style="image-rendering:auto"></canvas>
+  <div id="imgcount" style="margin-top:8px;font-size:15px"></div>
+  <div class="cap">Image mode uses simple colour and texture features per patch in place of CLIP and LLaVA, so it shows the algorithm's behaviour, not the real model's.</div>
+</div>
+
+<div class="grid">
+  <div class="cell"><h2>1. Saliency (CLS attention)</h2><canvas id="c_sal" width="24" height="24"></canvas><div class="cap">Brighter = more attended.</div></div>
+  <div class="cell"><h2>2. Relevance to prompt</h2><canvas id="c_rel" width="24" height="24"></canvas><div class="cap">Prompt: "How many cups are there?"</div></div>
+  <div class="cell"><h2>3. Fused score</h2><canvas id="c_fus" width="24" height="24"></canvas><div class="cap">alpha x rel + beta x sal, each min-max normalised.</div></div>
+  <div class="cell"><h2>4. Kept tokens</h2><canvas id="c_sel" width="24" height="24"></canvas>
+    <div class="cap leg"><span><i style="background:#1d4ed8"></i>floor</span><span><i style="background:#c2410c"></i>multiplicity</span><span><i style="background:#111"></i>fill</span><span><i style="background:#fff"></i>dropped</span></div></div>
+</div>
+<div id="hover">Hover a cell for its values.</div>
+
+<table id="stats"></table>
+
+<details open><summary>How each step works</summary>
+<p><b>Step 1, floor.</b> The grid is cut into GxG zones (G = largest divisor of 24 with G&sup2; &le; k, at most 6). Each zone keeps its best token by fused score, so every region of the image survives.</p>
+<p><b>Step 2, multiplicity.</b> The top 10% of tokens by saliency are linked when cosine similarity &ge; tau, then each linked group is split into 4-connected blobs on the grid. A group with two or more blobs means one pattern appears in separate places (several copies of an object), so the best token of every blob is kept. A single large object forms one blob and gets nothing extra.</p>
+<p><b>Step 3, fill.</b> The remaining budget goes to the highest fused scores, so exactly k tokens are kept.</p>
+<p><b>Baseline.</b> The similarity merge walks tokens in fused order and drops any token too similar to one already kept. On repeated objects it keeps one copy and drops the rest, which is the failure CAP-Select targets.</p>
+</details>
+
+<script>
+const N = 24, D = 8;
+const $ = id => document.getElementById(id);
+const idx = (r, c) => r * N + c;
+
+// ---- deterministic toy scene ----
+let seed = 7;
+const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-9)) * Math.cos(6.2832 * rnd());
+function unit(v) { const n = Math.hypot(...v) || 1; return v.map(x => x / n); }
+function randDir() { return unit(Array.from({ length: D }, gauss)); }
+
+let S; // scene: emb[], sal[], rel[], kind[]
+function buildScene(which) {
+  seed = 7 + which;
+  const cupDir = randDir(), bigDir = randDir(), bgDir = randDir();
+  const emb = [], sal = new Array(N * N).fill(0), kind = new Array(N * N).fill("bg");
+  for (let i = 0; i < N * N; i++) {
+    emb.push(unit(bgDir.map(x => x + 0.9 * gauss())));
+    sal[i] = 0.05 + 0.08 * rnd();
+  }
+  const put = (r0, c0, h, w, dir, nm, base, noise) => {
+    for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) {
+      const i = idx(r, c);
+      emb[i] = unit(dir.map(x => x + noise * gauss()));
+      sal[i] = base + 0.25 * rnd(); kind[i] = nm;
+    }
+  };
+  const cups = which === 2
+    ? [[2,2],[2,10],[3,19],[9,5],[10,14],[19,3],[20,12]]
+    : which === 1 ? [[2,3],[3,13],[10,19],[18,6]] : [];
+  cups.forEach(([r, c]) => put(r, c, 2, 2, cupDir, "cup", 0.55, 0.12));
+  put(10, 6, 6, 5, bigDir, "big", 0.5, 0.12);
+  // prompt embedding is close to the cup direction
+  const prompt = unit(cupDir.map(x => x + 0.25 * gauss()));
+  const rel = emb.map(e => dot(e, prompt));
+  S = { emb, sal, rel, kind };
+}
+const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+const mm = a => { const lo = Math.min(...a), hi = Math.max(...a); return a.map(x => (x - lo) / (hi - lo || 1)); };
+
+// ---- selection (paper Section III) ----
+function select(method, k, alpha, beta, tau) {
+  const sal = mm(S.sal), rel = mm(S.rel);
+  const fus = sal.map((s, i) => alpha * rel[i] + beta * s);
+  const order = [...fus.keys()].sort((a, b) => fus[b] - fus[a]);
+  const src = new Array(N * N).fill(null);
+  let kept = 0;
+  const take = (i, how) => { if (src[i] === null && kept < k) { src[i] = how; kept++; } };
+  let info = "";
+
+  if (method === "m") {
+    const ks = [];
+    for (const i of order) { if (ks.length >= k) break; if (!ks.some(j => dot(S.emb[i], S.emb[j]) > tau)) ks.push(i); }
+    for (const i of order) { if (ks.length >= k) break; if (!ks.includes(i)) ks.push(i); }
+    ks.forEach(i => take(i, "fill"));
+    return { fus, src, info: "merge baseline", blobs: 0, G: 0 };
+  }
+
+  let G = 0;
+  if (method >= 1) {
+    for (const g of [6, 4, 3, 2, 1]) if (g * g <= k) { G = g; break; }   // divisors of 24, max 6
+    const z = N / G;
+    for (let zr = 0; zr < G; zr++) for (let zc = 0; zc < G; zc++) {
+      let best = -1;
+      for (let r = zr * z; r < (zr + 1) * z; r++) for (let c = zc * z; c < (zc + 1) * z; c++) {
+        const i = idx(r, c); if (best < 0 || fus[i] > fus[best]) best = i;
+      }
+      take(best, "floor");
+    }
+  }
+
+  let blobs = 0;
+  if (method >= 2) {
+    const nc = Math.round(0.1 * N * N);
+    const cand = [...sal.keys()].sort((a, b) => sal[b] - sal[a]).slice(0, nc);
+    // single-linkage clusters by cosine >= tau
+    const par = cand.map((_, i) => i);
+    const f = x => par[x] === x ? x : (par[x] = f(par[x]));
+    for (let a = 0; a < cand.length; a++) for (let b = a + 1; b < cand.length; b++)
+      if (dot(S.emb[cand[a]], S.emb[cand[b]]) >= tau) par[f(a)] = f(b);
+    const groups = {};
+    cand.forEach((t, a) => (groups[f(a)] = groups[f(a)] || []).push(t));
+    const picks = [];
+    for (const g of Object.values(groups)) {
+      // split into 4-connected components on the grid
+      const set = new Set(g), seen = new Set(), comps = [];
+      for (const s of g) {
+        if (seen.has(s)) continue;
+        const comp = [], st = [s]; seen.add(s);
+        while (st.length) {
+          const t = st.pop(); comp.push(t);
+          const r = Math.floor(t / N), c = t % N;
+          for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+            const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= N || cc >= N) continue;
+            const u = idx(rr, cc); if (set.has(u) && !seen.has(u)) { seen.add(u); st.push(u); }
+          }
+        }
+        comps.push(comp);
+      }
+      if (comps.length >= 2) comps.forEach(cp => { picks.push(cp.reduce((a, b) => fus[b] > fus[a] ? b : a)); blobs++; });
+    }
+    picks.sort((a, b) => fus[b] - fus[a]).forEach(i => take(i, "mult"));
+  }
+  for (const i of order) take(i, "fill");
+  return { fus, src, blobs, G };
+}
+
+// ---- drawing ----
+const gray = v => { const g = Math.round(255 * (1 - v)); return `rgb(${g},${g},${g})`; };
+function heat(id, vals) {
+  const cx = $(id).getContext("2d");
+  vals.forEach((v, i) => { cx.fillStyle = gray(v); cx.fillRect(i % N, Math.floor(i / N), 1, 1); });
+}
+function draw() {
+  const method = $("method").value, k = +$("k").value, al = +$("a").value, be = +$("b").value, tau = +$("t").value;
+  $("kv").textContent = k; $("av").textContent = al.toFixed(1); $("bv").textContent = be.toFixed(1); $("tv").textContent = tau.toFixed(2);
+  const t0 = performance.now();
+  const r = select(method === "m" ? "m" : +method, k, al, be, tau);
+  const ms = (performance.now() - t0).toFixed(1);
+  heat("c_sal", mm(S.sal)); heat("c_rel", mm(S.rel)); heat("c_fus", mm(r.fus));
+  const cx = $("c_sel").getContext("2d");
+  const col = { floor: "#1d4ed8", mult: "#c2410c", fill: "#111" };
+  r.src.forEach((s, i) => { cx.fillStyle = s ? col[s] : "#fff"; cx.fillRect(i % N, Math.floor(i / N), 1, 1); });
+
+  // how many instances of each object kind survived
+  const cups = []; // count cup blobs with >=1 kept token
+  const cupCells = S.kind.map((x, i) => x === "cup" ? i : -1).filter(i => i >= 0);
+  const seen = new Set(); let cupTotal = 0, cupKept = 0;
+  for (const s of cupCells) {
+    if (seen.has(s)) continue; cupTotal++;
+    const st = [s]; seen.add(s); let any = false;
+    while (st.length) {
+      const t = st.pop(); if (r.src[t]) any = true;
+      const rr = Math.floor(t / N), cc = t % N;
+      for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const u = idx(rr + dr, cc + dc); if (rr + dr < 0 || cc + dc < 0 || rr + dr >= N || cc + dc >= N) continue;
+        if (S.kind[u] === "cup" && !seen.has(u)) { seen.add(u); st.push(u); }
+      }
+    }
+    if (any) cupKept++;
+  }
+  const n = s => r.src.filter(x => x === s).length;
+  $("stats").innerHTML = `<tr><th>Kept</th><th>Floor</th><th>Multiplicity</th><th>Fill</th><th>Zones (GxG)</th><th>Cup instances still visible</th></tr>
+    <tr><td>${r.src.filter(Boolean).length}</td><td>${n("floor")}</td><td>${n("mult")}</td><td>${n("fill")}</td><td>${r.G ? r.G + "x" + r.G : "none"}</td><td>${cupTotal ? cupKept + " of " + cupTotal : "n/a"}</td></tr><tr><td colspan="6">Selection ran in ${ms} ms</td></tr>`;
+  S.last = r; S.ms = ms;
+  if (S.img) drawImg(r, tau);
+}
+for (const id of ["method", "k", "a", "b", "t"]) $(id).oninput = draw;
+$("scene").onchange = () => { userImg = null; $("imgpanel").hidden = true; buildScene(+$("scene").value); draw(); };
+
+for (const id of ["c_sal", "c_rel", "c_fus", "c_sel"]) {
+  $(id).onmousemove = e => {
+    const b = e.target.getBoundingClientRect();
+    const c = Math.floor((e.clientX - b.left) / b.width * N), r = Math.floor((e.clientY - b.top) / b.height * N);
+    const i = idx(r, c);
+    $("hover").textContent = `row ${r}, col ${c}  |  saliency ${mm(S.sal)[i].toFixed(2)}  relevance ${mm(S.rel)[i].toFixed(2)}  fused ${S.last.fus[i].toFixed(2)}  |  content: ${S.kind[i]}  |  ${S.last.src[i] ? "kept (" + S.last.src[i] + ")" : "dropped"}`;
+  };
+}
+
+let userImg = null, cropURL = null;
+const nrm = v => Math.hypot(...v);
+function buildImage(img, target) {
+  const W = N * 8, cv = document.createElement("canvas"); cv.width = cv.height = W;
+  const cx = cv.getContext("2d");
+  const m = Math.min(img.width, img.height);                      // centre square crop, as CLIP does
+  cx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, W, W);
+  cropURL = cv.toDataURL("image/jpeg", 0.85);
+  const d = cx.getImageData(0, 0, W, W).data, f = [], P = 8;
+  for (let pr = 0; pr < N; pr++) for (let pc = 0; pc < N; pc++) {
+    let r = 0, g = 0, b = 0, l = 0, l2 = 0;
+    for (let y = 0; y < P; y++) for (let x = 0; x < P; x++) {
+      const o = ((pr * P + y) * W + pc * P + x) * 4, R = d[o] / 255, G = d[o+1] / 255, B = d[o+2] / 255, L = (R + G + B) / 3;
+      r += R; g += G; b += B; l += L; l2 += L * L;
+    }
+    const n = P * P; l /= n;
+    f.push([r / n, g / n, b / n, Math.sqrt(Math.max(0, l2 / n - l * l))]);
+  }
+  const mu = [0, 1, 2, 3].map(j => f.map(v => v[j]).sort((a, b) => a - b)[f.length >> 1]);   // median = background
+  const dev = f.map(v => v.map((x, j) => x - mu[j]));
+  const nm = dev.map(nrm), mx = Math.max(...nm) || 1;
+  const sal = dev.map((v, i) => nm[i] + 0.5 * f[i][3]);
+  const emb = dev.map(v => unit(v.map(x => x + 1e-6)));
+  let t = target ?? sal.indexOf(Math.max(...sal));
+  const rel = emb.map((e, i) => Math.max(0, dot(e, emb[t])) * Math.sqrt(nm[i] / mx));
+  S = { emb, sal, rel, kind: new Array(N * N).fill("img"), img, target: t, nm, mx };
+}
+function drawImg(r, tau) {
+  $("imgpanel").hidden = false;
+  const cv = $("c_img"), cx = cv.getContext("2d"), z = cv.width / N;
+  const im = new Image(); im.onload = () => {
+    cx.drawImage(im, 0, 0, cv.width, cv.height);
+    const col = { floor: "#1d4ed8", mult: "#c2410c", fill: "#111" };
+    r.src.forEach((s, i) => { if (!s) return; cx.lineWidth = 3; cx.strokeStyle = col[s]; cx.strokeRect((i % N) * z + 2, Math.floor(i / N) * z + 2, z - 4, z - 4); });
+    const t = S.target; cx.lineWidth = 3; cx.strokeStyle = "#fff"; cx.strokeRect((t % N) * z, Math.floor(t / N) * z, z, z);
+    cx.strokeStyle = "#111"; cx.lineWidth = 1; cx.strokeRect((t % N) * z - 1, Math.floor(t / N) * z - 1, z + 2, z + 2);
+  }; im.src = cropURL;
+  // local count: 4-connected blobs of patches that match the clicked patch
+  const ok = S.emb.map((e, i) => dot(e, S.emb[S.target]) >= tau && S.nm[i] > 0.25 * S.mx);
+  const seen = new Set(); let blobs = 0, kept = 0;
+  ok.forEach((v, i) => {
+    if (!v || seen.has(i)) return; blobs++;
+    const st = [i]; seen.add(i); let any = false;
+    while (st.length) {
+      const t = st.pop(); if (r.src[t]) any = true;
+      const rr = Math.floor(t / N), cc = t % N;
+      for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const a = rr + dr, b = cc + dc; if (a < 0 || b < 0 || a >= N || b >= N) continue;
+        const u = idx(a, b); if (ok[u] && !seen.has(u)) { seen.add(u); st.push(u); }
+      }
+    }
+    if (any) kept++;
+  });
+  S.localCount = blobs;
+  $("imgcount").innerHTML = `Matching objects found: <b>${blobs}</b> &nbsp; | &nbsp; still represented after pruning to ${r.src.filter(Boolean).length} tokens: <b>${kept} of ${blobs}</b> &nbsp; | &nbsp; selection time ${S.ms} ms`;
+}
+if ($("file")) $("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const im = new Image(); im.onload = () => { userImg = im; S0 = S; buildImage(im); draw(); }; im.src = URL.createObjectURL(f);
+};
+let S0;
+$("easy").onclick = () => {
+  const c = document.createElement("canvas"); c.width = c.height = 600; const x = c.getContext("2d");
+  x.fillStyle = "#f2efe8"; x.fillRect(0, 0, 600, 600);
+  [[110,120],[300,100],[490,140],[160,320],[360,300],[500,430],[280,500]].forEach(([a, b]) => {
+    const g = x.createRadialGradient(a - 15, b - 15, 5, a, b, 50);
+    g.addColorStop(0, "#e5483c"); g.addColorStop(1, "#9b1410");
+    x.fillStyle = g; x.beginPath(); x.arc(a, b, 48, 0, 7); x.fill();
+    x.fillStyle = "#4a3a1a"; x.fillRect(a - 2, b - 62, 4, 16);
+  });
+  const im = new Image(); im.onload = () => { userImg = im; buildImage(im); draw(); }; im.src = c.toDataURL();
+};
+$("c_img").onclick = e => {
+  const b = e.target.getBoundingClientRect();
+  const c = Math.floor((e.clientX - b.left) / b.width * N), r = Math.floor((e.clientY - b.top) / b.height * N);
+  buildImage(userImg, idx(r, c)); draw();
+};
+buildScene(1); draw();
+</script>
+</body>
+</html>
