@@ -31,17 +31,17 @@
 
 <div class="ctl">
   <div><label>Method <select id="method">
-    <option value="2">Stage 2: full CAP-Select</option>
-    <option value="1">Stage 1: floor + fused fill</option>
     <option value="0">Stage 0: top-k by fused score</option>
+    <option value="1">Stage 1: + spatial floor</option>
+    <option value="2">Stage 2: + multiplicity (full CAP-Select)</option>
     <option value="m">Baseline: similarity merge</option></select></label></div>
-  <div><label>Budget k = <span id="kv"></span><input id="k" type="range" min="16" max="192" step="1" value="64"></label></div>
+  <div><label>Budget k = <span id="kv"></span><input id="k" type="range" min="16" max="192" step="1" value="28"></label></div>
   <div><label>alpha (relevance) = <span id="av"></span><input id="a" type="range" min="0" max="2" step="0.1" value="1"></label></div>
   <div><label>beta (saliency) = <span id="bv"></span><input id="b" type="range" min="0" max="2" step="0.1" value="1"></label></div>
   <div><label>tau (cluster threshold) = <span id="tv"></span><input id="t" type="range" min="0.2" max="0.9" step="0.01" value="0.5"></label></div>
   <div><label>Scene <select id="scene">
     <option value="1">4 identical cups + 1 large object</option>
-    <option value="2">7 identical cups + 1 large object</option>
+    <option value="2" selected>7 identical cups + 1 large object</option>
     <option value="3">1 large object only</option></select></label></div>
   <div><label>&nbsp;<button id="easy" style="width:100%;padding:8px">Add sample image</button></label></div>
 </div>
@@ -54,9 +54,12 @@
   <div class="cap">Image mode uses simple colour and texture features per patch in place of CLIP and LLaVA, so it shows the algorithm's behaviour, not the real model's.</div>
 </div>
 
+<div style="margin-bottom:12px"><button id="next" style="padding:8px 16px">Next stage</button></div>
+<div id="desc" class="cell" style="margin-bottom:16px"></div>
+<div id="prog" class="grid" style="margin-bottom:16px"></div>
 <div class="grid">
   <div class="cell"><h2>1. Saliency (CLS attention)</h2><canvas id="c_sal" width="24" height="24"></canvas><div class="cap">Brighter = more attended.</div></div>
-  <div class="cell"><h2>2. Relevance to prompt</h2><canvas id="c_rel" width="24" height="24"></canvas><div class="cap">Prompt: "How many cups are there?"</div></div>
+  <div class="cell"><h2>2. Relevance to prompt</h2><canvas id="c_rel" width="24" height="24"></canvas><div class="cap">Prompt: "What objects are in the image, and how many?"</div></div>
   <div class="cell"><h2>3. Fused score</h2><canvas id="c_fus" width="24" height="24"></canvas><div class="cap">alpha x rel + beta x sal, each min-max normalised.</div></div>
   <div class="cell"><h2>4. Kept tokens</h2><canvas id="c_sel" width="24" height="24"></canvas>
     <div class="cap leg"><span><i style="background:#1d4ed8"></i>floor</span><span><i style="background:#c2410c"></i>multiplicity</span><span><i style="background:#111"></i>fill</span><span><i style="background:#fff"></i>dropped</span></div></div>
@@ -104,9 +107,9 @@ function buildScene(which) {
     ? [[2,2],[2,10],[3,19],[9,5],[10,14],[19,3],[20,12]]
     : which === 1 ? [[2,3],[3,13],[10,19],[18,6]] : [];
   cups.forEach(([r, c]) => put(r, c, 2, 2, cupDir, "cup", 0.55, 0.12));
-  put(10, 6, 6, 5, bigDir, "big", 0.5, 0.12);
+  put(10, 6, 6, 5, bigDir, "big", 0.9, 0.12);
   // prompt embedding is close to the cup direction
-  const prompt = unit(cupDir.map(x => x + 0.25 * gauss()));
+  const prompt = unit(cupDir.map((x, i) => x + bigDir[i] + 0.25 * gauss()));
   const rel = emb.map(e => dot(e, prompt));
   S = { emb, sal, rel, kind };
 }
@@ -218,8 +221,54 @@ function draw() {
   $("stats").innerHTML = `<tr><th>Kept</th><th>Floor</th><th>Multiplicity</th><th>Fill</th><th>Zones (GxG)</th><th>Cup instances still visible</th></tr>
     <tr><td>${r.src.filter(Boolean).length}</td><td>${n("floor")}</td><td>${n("mult")}</td><td>${n("fill")}</td><td>${r.G ? r.G + "x" + r.G : "none"}</td><td>${cupTotal ? cupKept + " of " + cupTotal : "n/a"}</td></tr><tr><td colspan="6">Selection ran in ${ms} ms</td></tr>`;
   S.last = r; S.ms = ms;
+  describe(method, k); progress(k, al, be, tau);
   if (S.img) drawImg(r, tau);
 }
+const TALLY = { 192: [66.2, 66.2, 66.6, 66.6], 128: [64.5, 64.7, 65.0, 64.9], 64: [62.0, 62.1, 64.1, 63.3], 32: [57.2, 58.3, 60.7, 61.3] };
+const GQA = { 192: [57.4, 58.0, 57.9], 128: [56.4, 57.3, 56.9], 64: [54.2, 56.1, 55.3], 32: [51.7, 53.6, 54.2] };
+const TEXT = {
+  0: ["Stage 0: top-k by fused score", "The starting point. Every token gets relevance (cosine to the prompt) plus saliency (CLS attention), and the k best are kept. Nothing protects spatial coverage or repeated objects, so tokens bunch up on the strongest object and copies of a smaller object can be dropped."],
+  1: ["Stage 1: add the spatial floor", "The 24x24 grid is cut into GxG zones and each zone keeps its best token (the idea from GridPrune and Nuwa). Every region of the image now survives, but one token per zone covers a region without counting what is in it. The paper finds this helps little at 64 tokens or more and more at 32."],
+  2: ["Stage 2: add multiplicity (full CAP-Select)", "Among the top 10% most salient tokens, groups with the same appearance (cosine at least 0.5) are split into grid-connected blobs. A group with two or more blobs is a repeated object, so the best token of every blob is kept. This is the step that preserves the count."],
+  m: ["Baseline: similarity merge", "The ToMe / DivPrune family. It drops any token too similar to one already kept. On repeated objects that keeps one copy and discards the rest, which is the failure CAP-Select is built to avoid. It stays competitive at very small budgets."]
+};
+function nearest(k) { return [192, 128, 64, 32].reduce((a, b) => Math.abs(b - k) < Math.abs(a - k) ? b : a); }
+function describe(method, k) {
+  const b = nearest(k), t = TALLY[b], g = GQA[b], [h, body] = TEXT[method];
+  const idx = method === "m" ? 3 : +method;
+  const tal = `TallyQA accuracy in the paper at k = ${b}: <b>${t[idx]}%</b>` + (method === "m" ? "" : ` (stage ${idx}); top-k 0 &rarr; floor 1 &rarr; full 2 reads ${t[0]} &rarr; ${t[1]} &rarr; ${t[2]}.`);
+  const gq = method === "m" ? `GQA at k = ${b}: merge ${g[2]} against CAP-Select ${g[1]}.` : "";
+  $("desc").innerHTML = `<h2>${h}</h2><div>${body}</div><div class="cap" style="font-size:13px">${tal} ${gq}</div>
+    <div class="cap">Numbers are the paper's measurements on LLaVA-1.5-7B. The maps below are a toy scene, so counts here illustrate the mechanism and do not reproduce the table.</div>`;
+}
+function cupsVisible(r) {
+  const cells = S.kind.map((x, i) => x === "cup" ? i : -1).filter(i => i >= 0), seen = new Set(); let tot = 0, kept = 0;
+  for (const s0 of cells) {
+    if (seen.has(s0)) continue; tot++; const st = [s0]; seen.add(s0); let any = false;
+    while (st.length) {
+      const t = st.pop(); if (r.src[t]) any = true;
+      const rr = Math.floor(t / N), cc = t % N;
+      for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const a = rr + dr, b = cc + dc; if (a < 0 || b < 0 || a >= N || b >= N) continue;
+        const u = idx(a, b); if (S.kind[u] === "cup" && !seen.has(u)) { seen.add(u); st.push(u); }
+      }
+    }
+    if (any) kept++;
+  }
+  return [kept, tot];
+}
+function progress(k, al, be, tau) {
+  const defs = [[0, "Stage 0: top-k"], [1, "Stage 1: + floor"], [2, "Stage 2: + multiplicity"], ["m", "Merge baseline"]];
+  if (!$("p0")) $("prog").innerHTML = defs.map((d, i) => `<div class="cell"><h2>${d[1]}</h2><canvas id="p${i}" width="24" height="24"></canvas><div class="cap" id="pc${i}"></div></div>`).join("");
+  const col = { floor: "#1d4ed8", mult: "#c2410c", fill: "#111" };
+  defs.forEach(([m], i) => {
+    const r = select(m, k, al, be, tau), cx = $("p" + i).getContext("2d");
+    r.src.forEach((src, j) => { cx.fillStyle = src ? col[src] : "#fff"; cx.fillRect(j % N, Math.floor(j / N), 1, 1); });
+    const [kp, tot] = cupsVisible(r);
+    $("pc" + i).innerHTML = tot ? `<b>${kp} of ${tot}</b> cups still visible` : "no repeated objects in this scene";
+  });
+}
+$("next").onclick = () => { const m = $("method"); m.selectedIndex = (m.selectedIndex + 1) % 3; draw(); };
 for (const id of ["method", "k", "a", "b", "t"]) $(id).oninput = draw;
 $("scene").onchange = () => { userImg = null; $("imgpanel").hidden = true; buildScene(+$("scene").value); draw(); };
 
@@ -341,7 +390,7 @@ $("c_img").onclick = e => {
   const c = Math.floor((e.clientX - b.left) / b.width * N), r = Math.floor((e.clientY - b.top) / b.height * N);
   buildImage(userImg, idx(r, c)); draw();
 };
-buildScene(1); draw();
+buildScene(2); draw();
 </script>
 </body>
 </html>
