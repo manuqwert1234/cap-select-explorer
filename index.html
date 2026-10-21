@@ -406,7 +406,7 @@ buildScene(2); draw();
   let cur = REAL.findIndex(r => r.grp === "easy");
   const names = [["stage0_topk", "Stage 0: top-k"], ["stage1_floor", "Stage 1: + floor"], ["stage2_capselect", "Stage 2: full CAP-Select"], ["merge_baseline", "Merge baseline"]];
   let hi = 0, ei = 0;
-  $("rp").innerHTML = [...REAL.keys()].sort((a, b) => (REAL[a].grp === "easy" ? 0 : 1) - (REAL[b].grp === "easy" ? 0 : 1) || a - b).map(i => [REAL[i], i]).map(([r, i]) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin:2px 4px 2px 0">${r.grp === "easy" ? "Easy photo " + (++ei) : "Photo " + (++hi)}</button>`).join("");
+  $("rp").innerHTML = [...REAL.keys()].sort((a, b) => (REAL[a].grp === "easy" ? 0 : 1) - (REAL[b].grp === "easy" ? 0 : 1) || a - b).map(i => [REAL[i], i]).map(([r, i]) => `<button class="rb" data-i="${i}" style="padding:6px 12px;margin:2px 4px 2px 0">Photo ${++hi}</button>`).join("");
   function summary(k) {
     return ["hard", "easy"].map(g => {
       const its = REAL.filter(r => r.grp === g);
